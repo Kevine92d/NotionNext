@@ -14,7 +14,14 @@ export default function BatchUploadManager({ className = '' }) {
   const [uploadConfig, setUploadConfig] = useState({
     overwriteExisting: false,
     skipInvalid: true,
-    customPropertyMapping: {}
+    customPropertyMapping: {},
+    defaultProperties: {
+      category: '',
+      tags: [],
+      status: 'Draft',
+      type: 'Post'
+    },
+    overrideWithDefaults: false
   })
   const fileInputRef = useRef(null)
 
@@ -263,31 +270,134 @@ export default function BatchUploadManager({ className = '' }) {
         <div className="upload-config mb-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
           <h3 className="text-lg font-semibold mb-4 text-gray-800 dark:text-gray-200">上传配置</h3>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="flex items-center space-x-2">
-              <input 
-                type="checkbox" 
-                id="overwriteExisting"
-                checked={uploadConfig.overwriteExisting}
-                onChange={(e) => setUploadConfig(prev => ({ ...prev, overwriteExisting: e.target.checked }))}
-                className="rounded"
-              />
-              <label htmlFor="overwriteExisting" className="text-sm text-gray-700 dark:text-gray-300">
-                覆盖已存在的页面
-              </label>
+          <div className="space-y-4">
+            {/* 基本配置 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex items-center space-x-2">
+                <input 
+                  type="checkbox" 
+                  id="overwriteExisting"
+                  checked={uploadConfig.overwriteExisting}
+                  onChange={(e) => setUploadConfig(prev => ({ ...prev, overwriteExisting: e.target.checked }))}
+                  className="rounded"
+                />
+                <label htmlFor="overwriteExisting" className="text-sm text-gray-700 dark:text-gray-300">
+                  覆盖已存在的页面
+                </label>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <input 
+                  type="checkbox" 
+                  id="skipInvalid"
+                  checked={uploadConfig.skipInvalid}
+                  onChange={(e) => setUploadConfig(prev => ({ ...prev, skipInvalid: e.target.checked }))}
+                  className="rounded"
+                />
+                <label htmlFor="skipInvalid" className="text-sm text-gray-700 dark:text-gray-300">
+                  跳过无效文件
+                </label>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <input 
+                  type="checkbox" 
+                  id="overrideWithDefaults"
+                  checked={uploadConfig.overrideWithDefaults}
+                  onChange={(e) => setUploadConfig(prev => ({ ...prev, overrideWithDefaults: e.target.checked }))}
+                  className="rounded"
+                />
+                <label htmlFor="overrideWithDefaults" className="text-sm text-gray-700 dark:text-gray-300">
+                  使用默认属性覆盖文件属性
+                </label>
+              </div>
             </div>
 
-            <div className="flex items-center space-x-2">
-              <input 
-                type="checkbox" 
-                id="skipInvalid"
-                checked={uploadConfig.skipInvalid}
-                onChange={(e) => setUploadConfig(prev => ({ ...prev, skipInvalid: e.target.checked }))}
-                className="rounded"
-              />
-              <label htmlFor="skipInvalid" className="text-sm text-gray-700 dark:text-gray-300">
-                跳过无效文件
-              </label>
+            {/* 默认属性设置 */}
+            <div className="border-t border-gray-200 dark:border-gray-600 pt-4">
+              <h4 className="text-md font-medium mb-3 text-gray-800 dark:text-gray-200">默认属性设置</h4>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* 默认分类 */}
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                    默认分类
+                  </label>
+                  <input 
+                    type="text"
+                    value={uploadConfig.defaultProperties.category}
+                    onChange={(e) => setUploadConfig(prev => ({ 
+                      ...prev, 
+                      defaultProperties: { ...prev.defaultProperties, category: e.target.value }
+                    }))}
+                    className="w-full p-2 border rounded-md dark:bg-gray-600 dark:border-gray-500 dark:text-white"
+                    placeholder="例如: 技术博客"
+                  />
+                </div>
+
+                {/* 默认状态 */}
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                    默认状态
+                  </label>
+                  <select 
+                    value={uploadConfig.defaultProperties.status}
+                    onChange={(e) => setUploadConfig(prev => ({ 
+                      ...prev, 
+                      defaultProperties: { ...prev.defaultProperties, status: e.target.value }
+                    }))}
+                    className="w-full p-2 border rounded-md dark:bg-gray-600 dark:border-gray-500 dark:text-white"
+                  >
+                    <option value="Draft">草稿</option>
+                    <option value="Published">已发布</option>
+                    <option value="Private">私有</option>
+                    <option value="Archived">归档</option>
+                  </select>
+                </div>
+
+                {/* 默认类型 */}
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                    默认类型
+                  </label>
+                  <select 
+                    value={uploadConfig.defaultProperties.type}
+                    onChange={(e) => setUploadConfig(prev => ({ 
+                      ...prev, 
+                      defaultProperties: { ...prev.defaultProperties, type: e.target.value }
+                    }))}
+                    className="w-full p-2 border rounded-md dark:bg-gray-600 dark:border-gray-500 dark:text-white"
+                  >
+                    <option value="Post">文章</option>
+                    <option value="Page">页面</option>
+                    <option value="Note">笔记</option>
+                    <option value="Draft">草稿</option>
+                  </select>
+                </div>
+
+                {/* 默认标签 */}
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">
+                    默认标签
+                  </label>
+                  <input 
+                    type="text"
+                    value={uploadConfig.defaultProperties.tags.join(', ')}
+                    onChange={(e) => setUploadConfig(prev => ({ 
+                      ...prev, 
+                      defaultProperties: { 
+                        ...prev.defaultProperties, 
+                        tags: e.target.value.split(',').map(tag => tag.trim()).filter(Boolean)
+                      }
+                    }))}
+                    className="w-full p-2 border rounded-md dark:bg-gray-600 dark:border-gray-500 dark:text-white"
+                    placeholder="例如: 技术, React, JavaScript"
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    用逗号分隔多个标签
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         </div>

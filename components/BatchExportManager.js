@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { loadExternalResource } from '@/lib/utils'
 
 /**
@@ -16,7 +16,8 @@ export default function BatchExportManager({ className = '' }) {
     type: '',
     category: '',
     tags: [],
-    dateRange: { start: '', end: '' }
+    dateRange: { start: '', end: '' },
+    keyword: ''
   })
   const [exportConfig, setExportConfig] = useState({
     includeImages: true,
@@ -26,57 +27,109 @@ export default function BatchExportManager({ className = '' }) {
   })
 
   // 获取所有页面
-  useEffect(() => {
-    fetchAllPages()
-  }, [])
-
   const fetchAllPages = async () => {
     setLoading(true)
     try {
       const response = await fetch('/api/export', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'get-all-pages' })
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'get-all-pages'
+        }),
       })
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch pages')
+      }
+
+      const data = await response.json()
       
-      if (response.ok) {
-        const data = await response.json()
+      // 检查返回的数据结构
+      if (Array.isArray(data)) {
+        setPages(data)
+      } else if (data.success && Array.isArray(data.pages)) {
+        setPages(data.pages)
+      } else if (data.success && Array.isArray(data)) {
         setPages(data)
       } else {
-        console.error('Failed to fetch pages')
+        console.warn('Unexpected data format:', data)
+        setPages([])
       }
     } catch (error) {
       console.error('Error fetching pages:', error)
+      alert('获取页面列表失败：' + error.message)
+      setPages([])
     } finally {
       setLoading(false)
     }
   }
 
+  // 初始化页面数据
+  useEffect(() => {
+    fetchAllPages()
+  }, [])
+
   // 过滤页面
-  const filteredPages = pages.filter(page => {
-    if (filterConfig.status && page.status !== filterConfig.status) return false
-    if (filterConfig.type && page.type !== filterConfig.type) return false
-    if (filterConfig.category && page.category !== filterConfig.category) return false
-    
-    if (filterConfig.tags.length > 0) {
-      const hasMatchingTag = filterConfig.tags.some(tag => 
-        page.tags?.includes(tag)
-      )
-      if (!hasMatchingTag) return false
+  const filteredPages = useMemo(() => {
+    if (!Array.isArray(pages)) {
+      console.warn('Pages is not an array:', pages)
+      return []
     }
 
-    if (filterConfig.dateRange.start || filterConfig.dateRange.end) {
-      const pageDate = new Date(page.date?.start_date || page.date)
-      if (filterConfig.dateRange.start && pageDate < new Date(filterConfig.dateRange.start)) {
-        return false
-      }
-      if (filterConfig.dateRange.end && pageDate > new Date(filterConfig.dateRange.end)) {
-        return false
-      }
-    }
+    return pages.filter(page => {
+      if (!page) return false
 
-    return true
-  })
+      // 状态过滤
+      if (filterConfig.status && page.status !== filterConfig.status) {
+        return false
+      }
+
+      // 类型过滤
+      if (filterConfig.type && page.type !== filterConfig.type) {
+        return false
+      }
+
+      // 分类过滤
+      if (filterConfig.category && page.category !== filterConfig.category) {
+        return false
+      }
+
+      // 标签过滤
+      if (filterConfig.tags && filterConfig.tags.length > 0) {
+        const pageTags = Array.isArray(page.tags) ? page.tags : []
+        const hasTag = filterConfig.tags.some(tag => 
+          pageTags.includes(tag)
+        )
+        if (!hasTag) return false
+      }
+
+      // 日期范围过滤
+      if (filterConfig.dateRange?.start || filterConfig.dateRange?.end) {
+        const pageDate = new Date(page.date)
+        const startDate = filterConfig.dateRange?.start ? new Date(filterConfig.dateRange.start) : null
+        const endDate = filterConfig.dateRange?.end ? new Date(filterConfig.dateRange.end) : null
+
+        if (startDate && pageDate < startDate) return false
+        if (endDate && pageDate > endDate) return false
+      }
+
+      // 关键词搜索
+      if (filterConfig.keyword) {
+        const keyword = filterConfig.keyword.toLowerCase()
+        const title = (page.title || '').toLowerCase()
+        const summary = (page.summary || '').toLowerCase()
+        const category = (page.category || '').toLowerCase()
+        
+        if (!title.includes(keyword) && !summary.includes(keyword) && !category.includes(keyword)) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [pages, filterConfig])
 
   // 选择/取消选择页面
   const togglePageSelection = (pageId) => {
@@ -151,25 +204,38 @@ export default function BatchExportManager({ className = '' }) {
 
   // 下载为ZIP文件
   const downloadAsZip = async (results) => {
-    // 动态加载JSZip库
-    await loadExternalResource('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', 'js')
-    
-    const zip = new JSZip()
-    
-    results.forEach(result => {
-      const filename = `${result.slug || result.title || result.pageId}.md`
-      zip.file(filename, result.markdown)
-    })
+    try {
+      // 动态加载JSZip库
+      if (typeof window !== 'undefined' && !window.JSZip) {
+        await loadExternalResource('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', 'js')
+      }
+      
+      if (!window.JSZip) {
+        throw new Error('Failed to load JSZip library')
+      }
+      
+      const zip = new window.JSZip()
+      
+      results.forEach(result => {
+        if (result.success && result.markdown) {
+          const filename = `${result.slug || result.title || result.pageId}.md`
+          zip.file(filename, result.markdown)
+        }
+      })
 
-    const content = await zip.generateAsync({ type: 'blob' })
-    const url = URL.createObjectURL(content)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `notion-export-${new Date().toISOString().split('T')[0]}.zip`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+      const content = await zip.generateAsync({ type: 'blob' })
+      const url = URL.createObjectURL(content)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `notion-export-${new Date().toISOString().split('T')[0]}.zip`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Error creating ZIP file:', error)
+      alert('创建ZIP文件失败：' + error.message)
+    }
   }
 
   // 导出单个页面
@@ -285,6 +351,17 @@ export default function BatchExportManager({ className = '' }) {
                   className="flex-1 p-2 border rounded-md dark:bg-gray-600 dark:border-gray-500 dark:text-white"
                 />
               </div>
+            </div>
+
+            {/* 关键词搜索 */}
+            <div>
+              <label className="block text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">关键词</label>
+              <input 
+                type="text"
+                value={filterConfig.keyword}
+                onChange={(e) => setFilterConfig(prev => ({ ...prev, keyword: e.target.value }))}
+                className="w-full p-2 border rounded-md dark:bg-gray-600 dark:border-gray-500 dark:text-white"
+              />
             </div>
           </div>
         </div>

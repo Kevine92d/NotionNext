@@ -1,13 +1,11 @@
 import { NotionAPI } from 'notion-client'
 import BLOG from '@/blog.config'
-import { getDataFromCache, setDataToCache } from '@/lib/cache'
-import { getAllPageIds } from '@/lib/notion/getAllPageIds'
+import { getDataFromCache, setDataToCache } from '@/lib/cache/cache_manager'
+import { getGlobalData } from '@/lib/db/getSiteData'
 import { getPageProperties } from '@/lib/notion/getPageProperties'
 import { getPostBlocks } from '@/lib/notion/getPostBlocks'
 import formatDate from '@/lib/utils/formatDate'
-import { NotionToMarkdown } from 'notion-to-md'
-
-const notion = new NotionAPI()
+import notionAPI from '@/lib/notion/getNotionAPI'
 
 /**
  * 批量导出 Notion 页面为 Markdown 文档
@@ -15,7 +13,7 @@ const notion = new NotionAPI()
  */
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' })
+    return res.status(405).json({ success: false, message: 'Method not allowed' })
   }
 
   const { 
@@ -27,67 +25,107 @@ export default async function handler(req, res) {
 
   try {
     switch (action) {
-      case 'export-batch':
-        const result = await exportBatchToMarkdown(pageIds, exportConfig, filterConfig)
-        return res.status(200).json(result)
-      
       case 'get-all-pages':
+        console.log('📥 [EXPORT] Fetching all pages...', { timestamp: new Date().toISOString() })
         const allPages = await getAllPagesWithMeta()
+        console.log('✅ [EXPORT] Pages fetched successfully', { 
+          count: allPages.length, 
+          timestamp: new Date().toISOString() 
+        })
         return res.status(200).json(allPages)
       
+      case 'export-batch':
+        console.log('📤 [BATCH EXPORT START]', {
+          pageIds: pageIds?.length,
+          exportConfig,
+          timestamp: new Date().toISOString()
+        })
+        const batchResults = await exportBatchToMarkdown(pageIds, exportConfig, filterConfig)
+        console.log('✅ [BATCH EXPORT COMPLETE]', {
+          exported: batchResults.exported,
+          failed: batchResults.failed,
+          timestamp: new Date().toISOString()
+        })
+        return res.status(200).json(batchResults)
+      
       case 'export-single':
+        console.log('📤 [SINGLE EXPORT]', { pageId, timestamp: new Date().toISOString() })
         const singleResult = await exportSinglePageToMarkdown(req.body.pageId, exportConfig)
+        if (singleResult.success) {
+          console.log('✅ [SINGLE EXPORT SUCCESS]', { 
+            pageId, 
+            title: singleResult.title,
+            timestamp: new Date().toISOString() 
+          })
+        } else {
+          console.log('❌ [SINGLE EXPORT ERROR]', { 
+            pageId, 
+            error: singleResult.error,
+            timestamp: new Date().toISOString() 
+          })
+        }
         return res.status(200).json(singleResult)
       
       default:
-        return res.status(400).json({ error: 'Invalid action' })
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid action' 
+        })
     }
   } catch (error) {
     console.error('Export API error:', error)
     return res.status(500).json({ 
-      error: 'Internal server error', 
-      message: error.message 
+      success: false, 
+      message: error.message || 'Internal server error' 
     })
   }
 }
 
 /**
- * 获取所有页面及其元数据
+ * 获取所有页面及其元数据 - 使用原始项目的数据获取方式
  */
 async function getAllPagesWithMeta() {
-  const cacheKey = 'all-pages-meta'
-  const cached = await getDataFromCache(cacheKey)
-  
-  if (cached) {
-    return cached
-  }
-
-  const allPages = await getAllPageIds()
-  const pagesWithMeta = []
-
-  for (const pageId of allPages) {
-    try {
-      const properties = await getPageProperties(pageId)
-      if (properties) {
-        pagesWithMeta.push({
-          id: pageId,
-          title: properties.title || 'Untitled',
-          type: properties.type || 'Page',
-          status: properties.status || 'Published',
-          category: properties.category || '',
-          tags: properties.tags || [],
-          date: properties.date || null,
-          summary: properties.summary || '',
-          slug: properties.slug || pageId
-        })
-      }
-    } catch (error) {
-      console.warn(`Failed to get properties for page ${pageId}:`, error.message)
+  try {
+    const cacheKey = 'batch-export-pages-meta'
+    const cached = await getDataFromCache(cacheKey)
+    
+    if (cached) {
+      return cached // 直接返回数组
     }
-  }
 
-  await setDataToCache(cacheKey, pagesWithMeta, 300) // 缓存5分钟
-  return pagesWithMeta
+    // 使用原始项目的getSiteData方法
+    const siteData = await getGlobalData({
+      pageId: BLOG.NOTION_PAGE_ID,
+      from: 'batch-export-api'
+    })
+
+    if (!siteData.allPages || !Array.isArray(siteData.allPages)) {
+      console.warn('No allPages found in site data')
+      return []
+    }
+
+    // 转换为导出管理器需要的格式
+    const pagesWithMeta = siteData.allPages
+      .filter(page => page && page.id) // 过滤无效页面
+      .slice(0, 100) // 限制数量
+      .map(page => ({
+        id: page.id,
+        title: page.title || 'Untitled',
+        type: page.type || 'Post',
+        status: page.status || 'Published',
+        category: page.category || '',
+        tags: page.tags || [],
+        date: page.date?.start_date || page.publishDate || page.lastEditedDate || null,
+        summary: page.summary || '',
+        slug: page.slug || page.id
+      }))
+
+    await setDataToCache(cacheKey, pagesWithMeta, 300) // 缓存5分钟
+    return pagesWithMeta // 直接返回数组
+  } catch (error) {
+    console.error('Error getting pages meta:', error)
+    return [] // 返回空数组而不是错误对象
+  }
 }
 
 /**
@@ -97,54 +135,69 @@ async function exportBatchToMarkdown(pageIds, exportConfig, filterConfig) {
   const results = []
   const errors = []
 
-  // 如果没有指定 pageIds，获取所有符合条件的页面
-  if (!pageIds || pageIds.length === 0) {
-    const allPages = await getAllPagesWithMeta()
-    pageIds = filterPages(allPages, filterConfig).map(page => page.id)
-  }
-
-  for (const pageId of pageIds) {
-    try {
-      const result = await exportSinglePageToMarkdown(pageId, exportConfig)
-      if (result.success) {
-        results.push(result)
+  try {
+    // 如果没有指定 pageIds，获取所有符合条件的页面
+    if (!pageIds || pageIds.length === 0) {
+      const allPagesResult = await getAllPagesWithMeta()
+      if (allPagesResult.length > 0) {
+        const filteredPages = filterPages(allPagesResult, filterConfig)
+        pageIds = filteredPages.map(page => page.id)
       } else {
-        errors.push({ pageId, error: result.error })
+        return { success: false, message: 'Failed to get pages' }
       }
-    } catch (error) {
-      errors.push({ pageId, error: error.message })
     }
-  }
 
-  return {
-    success: true,
-    total: pageIds.length,
-    exported: results.length,
-    failed: errors.length,
-    results,
-    errors
+    for (const pageId of pageIds.slice(0, 20)) { // 限制导出数量
+      try {
+        const result = await exportSinglePageToMarkdown(pageId, exportConfig)
+        if (result.success) {
+          results.push(result)
+        } else {
+          errors.push({ pageId, error: result.message })
+        }
+      } catch (error) {
+        errors.push({ pageId, error: error.message })
+      }
+    }
+
+    return {
+      success: true,
+      message: `Exported ${results.length} pages`,
+      total: pageIds.length,
+      exported: results.length,
+      failed: errors.length,
+      results,
+      errors
+    }
+  } catch (error) {
+    return {
+      success: false,
+      message: error.message,
+      results: [],
+      errors: []
+    }
   }
 }
 
 /**
- * 导出单个页面为 Markdown
+ * 导出单个页面为 Markdown（简化版本）
  */
 async function exportSinglePageToMarkdown(pageId, exportConfig = {}) {
   try {
     // 获取页面属性
     const properties = await getPageProperties(pageId)
     if (!properties) {
-      return { success: false, error: 'Page not found or not accessible' }
+      return { success: false, message: 'Page not found or not accessible' }
     }
 
     // 获取页面内容块
     const blockMap = await getPostBlocks(pageId)
     if (!blockMap) {
-      return { success: false, error: 'Failed to get page content' }
+      return { success: false, message: 'Failed to get page content' }
     }
 
-    // 转换为 Markdown
-    const markdown = await convertBlocksToMarkdown(blockMap, pageId, exportConfig)
+    // 简化的 Markdown 转换
+    const markdown = convertBlocksToSimpleMarkdown(blockMap, pageId)
     
     // 生成 Front Matter
     const frontMatter = generateFrontMatter(properties, exportConfig)
@@ -157,6 +210,7 @@ async function exportSinglePageToMarkdown(pageId, exportConfig = {}) {
       pageId,
       title: properties.title || 'Untitled',
       slug: properties.slug || pageId,
+      fileName: `${properties.slug || pageId}.md`,
       markdown: fullMarkdown,
       properties,
       meta: {
@@ -168,162 +222,88 @@ async function exportSinglePageToMarkdown(pageId, exportConfig = {}) {
     return { 
       success: false, 
       pageId, 
-      error: error.message 
+      message: error.message 
     }
   }
 }
 
 /**
- * 将 Notion 块转换为 Markdown
+ * 简化的块转换为 Markdown
  */
-async function convertBlocksToMarkdown(blockMap, pageId, exportConfig) {
+function convertBlocksToSimpleMarkdown(blockMap, pageId) {
   try {
-    // 使用 notion-to-md 库进行转换
-    const n2m = new NotionToMarkdown({ notionAPI: notion })
-    
-    // 获取页面的所有块
     const blocks = blockMap.block || {}
     const pageBlock = blocks[pageId]
     
     if (!pageBlock || !pageBlock.value) {
-      throw new Error('Invalid page block')
+      return '# ' + (pageBlock?.value?.properties?.title?.[0]?.[0] || 'Untitled') + '\n\nContent could not be exported.'
     }
 
-    // 获取子块
-    const childIds = pageBlock.value.content || []
     let markdown = ''
+    const title = pageBlock.value.properties?.title?.[0]?.[0]
+    
+    if (title) {
+      markdown += `# ${title}\n\n`
+    }
 
-    for (const childId of childIds) {
-      const childBlock = blocks[childId]
-      if (childBlock && childBlock.value) {
-        const blockMarkdown = await convertSingleBlockToMarkdown(childBlock.value, blocks, exportConfig)
-        if (blockMarkdown) {
-          markdown += blockMarkdown + '\n\n'
+    // 简单的内容提取
+    const content = pageBlock.value.content || []
+    for (const contentId of content.slice(0, 50)) { // 限制块数量
+      const block = blocks[contentId]
+      if (block && block.value) {
+        const blockText = extractTextFromBlock(block.value)
+        if (blockText) {
+          markdown += blockText + '\n\n'
         }
       }
     }
 
-    return markdown.trim()
+    return markdown || 'No content available.'
   } catch (error) {
-    console.error('Error converting blocks to markdown:', error)
-    return ''
+    console.error('Error converting blocks:', error)
+    return 'Error extracting content: ' + error.message
   }
 }
 
 /**
- * 转换单个块为 Markdown
+ * 从块中提取文本
  */
-async function convertSingleBlockToMarkdown(block, allBlocks, exportConfig) {
-  const type = block.type
+function extractTextFromBlock(block) {
+  if (!block) return ''
   
+  const type = block.type
+  const properties = block.properties || {}
+  
+  let text = ''
+  
+  // 提取标题文本
+  if (properties.title && Array.isArray(properties.title)) {
+    text = properties.title.map(item => item[0] || '').join('')
+  }
+  
+  // 根据块类型添加格式
   switch (type) {
-    case 'text':
-      return convertTextToMarkdown(block)
     case 'header':
-      return `# ${getPlainText(block.properties?.title)}`
+      return `# ${text}`
     case 'sub_header':
-      return `## ${getPlainText(block.properties?.title)}`
+      return `## ${text}`
     case 'sub_sub_header':
-      return `### ${getPlainText(block.properties?.title)}`
+      return `### ${text}`
+    case 'text':
+      return text
     case 'bulleted_list':
-      return `- ${getPlainText(block.properties?.title)}`
+      return `- ${text}`
     case 'numbered_list':
-      return `1. ${getPlainText(block.properties?.title)}`
-    case 'code':
-      const language = block.properties?.language?.[0]?.[0] || ''
-      const code = getPlainText(block.properties?.title)
-      return `\`\`\`${language}\n${code}\n\`\`\``
+      return `1. ${text}`
     case 'quote':
-      return `> ${getPlainText(block.properties?.title)}`
+      return `> ${text}`
+    case 'code':
+      return `\`\`\`\n${text}\n\`\`\``
     case 'divider':
       return '---'
-    case 'image':
-      return convertImageToMarkdown(block, exportConfig)
     default:
-      return getPlainText(block.properties?.title) || ''
-  }
-}
-
-/**
- * 转换文本块为 Markdown
- */
-function convertTextToMarkdown(block) {
-  const title = block.properties?.title
-  if (!title) return ''
-  
-  return title.map(segment => {
-    if (typeof segment === 'string') {
-      return segment
-    }
-    
-    const [text, formatting] = segment
-    if (!formatting || formatting.length === 0) {
       return text
-    }
-    
-    let result = text
-    formatting.forEach(format => {
-      const [type] = format
-      switch (type) {
-        case 'b': // bold
-          result = `**${result}**`
-          break
-        case 'i': // italic
-          result = `*${result}*`
-          break
-        case 'c': // code
-          result = `\`${result}\``
-          break
-        case 's': // strikethrough
-          result = `~~${result}~~`
-          break
-        case 'a': // link
-          const url = format[1]
-          result = `[${result}](${url})`
-          break
-      }
-    })
-    
-    return result
-  }).join('')
-}
-
-/**
- * 转换图片为 Markdown
- */
-function convertImageToMarkdown(block, exportConfig) {
-  const imageUrl = block.properties?.source?.[0]?.[0]
-  const caption = getPlainText(block.properties?.caption)
-  
-  if (!imageUrl) return ''
-  
-  // 如果配置了图片处理，可以在这里添加图床上传逻辑
-  const finalUrl = exportConfig.processImages ? processImageUrl(imageUrl) : imageUrl
-  
-  return caption ? `![${caption}](${finalUrl})` : `![](${finalUrl})`
-}
-
-/**
- * 处理图片URL（可扩展为上传到图床）
- */
-function processImageUrl(url) {
-  // 这里可以添加图床上传逻辑，类似 elog 的图床功能
-  // 暂时返回原URL
-  return url
-}
-
-/**
- * 获取纯文本内容
- */
-function getPlainText(richText) {
-  if (!richText) return ''
-  
-  return richText.map(segment => {
-    if (typeof segment === 'string') {
-      return segment
-    }
-    return segment[0]
-  }).join('')
+  }
 }
 
 /**
@@ -332,45 +312,41 @@ function getPlainText(richText) {
 function generateFrontMatter(properties, exportConfig = {}) {
   const frontMatter = {
     title: properties.title || 'Untitled',
-    date: properties.date?.start_date || formatDate(new Date(), BLOG.LANG),
-    updated: properties.lastEditedTime || formatDate(new Date(), BLOG.LANG),
+    date: properties.date || new Date().toISOString().split('T')[0],
     tags: properties.tags || [],
     categories: properties.category ? [properties.category] : [],
-    slug: properties.slug || properties.id,
+    slug: properties.slug || '',
     status: properties.status || 'Published',
     type: properties.type || 'Post'
   }
 
-  // 添加自定义字段
-  if (exportConfig.customFields) {
-    Object.assign(frontMatter, exportConfig.customFields)
-  }
+  // 添加可选字段
+  if (properties.summary) frontMatter.summary = properties.summary
+  if (properties.updated) frontMatter.updated = properties.updated
 
   // 过滤空值
-  Object.keys(frontMatter).forEach(key => {
-    if (frontMatter[key] === null || frontMatter[key] === undefined || 
-        (Array.isArray(frontMatter[key]) && frontMatter[key].length === 0)) {
-      delete frontMatter[key]
-    }
-  })
+  const filteredFrontMatter = Object.fromEntries(
+    Object.entries(frontMatter).filter(([key, value]) => 
+      value !== null && value !== undefined && value !== '' && 
+      !(Array.isArray(value) && value.length === 0)
+    )
+  )
 
-  // 生成 YAML Front Matter
-  const yamlContent = Object.entries(frontMatter)
+  // 转换为 YAML
+  const yamlContent = Object.entries(filteredFrontMatter)
     .map(([key, value]) => {
       if (Array.isArray(value)) {
-        if (value.length === 0) return null
-        return `${key}:\n${value.map(item => `  - ${item}`).join('\n')}`
+        return `${key}: [${value.map(v => `"${v}"`).join(', ')}]`
       }
-      return `${key}: ${typeof value === 'string' ? `"${value}"` : value}`
+      return `${key}: "${value}"`
     })
-    .filter(Boolean)
     .join('\n')
 
   return `---\n${yamlContent}\n---`
 }
 
 /**
- * 根据条件过滤页面
+ * 过滤页面
  */
 function filterPages(pages, filterConfig) {
   if (!filterConfig || Object.keys(filterConfig).length === 0) {
@@ -378,42 +354,36 @@ function filterPages(pages, filterConfig) {
   }
 
   return pages.filter(page => {
-    // 按状态过滤
-    if (filterConfig.status && page.status !== filterConfig.status) {
-      return false
+    // 状态过滤
+    if (filterConfig.status && filterConfig.status.length > 0) {
+      if (!filterConfig.status.includes(page.status)) return false
     }
 
-    // 按类型过滤
-    if (filterConfig.type && page.type !== filterConfig.type) {
-      return false
+    // 类型过滤
+    if (filterConfig.type && filterConfig.type.length > 0) {
+      if (!filterConfig.type.includes(page.type)) return false
     }
 
-    // 按分类过滤
-    if (filterConfig.category && page.category !== filterConfig.category) {
-      return false
+    // 分类过滤
+    if (filterConfig.category && filterConfig.category.length > 0) {
+      if (!filterConfig.category.includes(page.category)) return false
     }
 
-    // 按标签过滤
+    // 标签过滤
     if (filterConfig.tags && filterConfig.tags.length > 0) {
-      if (!page.tags || page.tags.length === 0) {
-        return false
-      }
-      const hasMatchingTag = filterConfig.tags.some(tag => page.tags.includes(tag))
-      if (!hasMatchingTag) {
-        return false
-      }
+      const hasMatchingTag = filterConfig.tags.some(tag => 
+        page.tags && page.tags.includes(tag)
+      )
+      if (!hasMatchingTag) return false
     }
 
-    // 按日期范围过滤
+    // 日期范围过滤
     if (filterConfig.dateRange) {
-      const pageDate = new Date(page.date?.start_date || page.date)
-      const startDate = filterConfig.dateRange.start ? new Date(filterConfig.dateRange.start) : null
-      const endDate = filterConfig.dateRange.end ? new Date(filterConfig.dateRange.end) : null
-      
-      if (startDate && pageDate < startDate) {
+      const pageDate = new Date(page.date)
+      if (filterConfig.dateRange.start && pageDate < new Date(filterConfig.dateRange.start)) {
         return false
       }
-      if (endDate && pageDate > endDate) {
+      if (filterConfig.dateRange.end && pageDate > new Date(filterConfig.dateRange.end)) {
         return false
       }
     }
