@@ -47,7 +47,13 @@
     "react-hotkeys-hook": "^4.5.0",
     "react-notion-x": "7.3.0",
     "react-share": "^5.2.2",
-    "react-tweet-embed": "~2.0.0"
+    "react-tweet-embed": "~2.0.0",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.1.0",
+    "jszip": "^3.10.1",
+    "file-saver": "^2.0.5",
+    "turndown": "^7.1.2",
+    "turndown-plugin-gfm": "^1.0.2"
   },
   "devDependencies": {
     "@types/node": "22.15.3",
@@ -70,7 +76,9 @@
     "prettier": "^3.3.2",
     "tailwindcss": "^3.3.2",
     "typescript": "5.6.2",
-    "webpack-bundle-analyzer": "^4.5.0"
+    "webpack-bundle-analyzer": "^4.5.0",
+    "@types/js-yaml": "^4.0.8",
+    "@types/file-saver": "^2.0.7"
   },
   "resolutions": {
     "axios": ">=0.21.1"
